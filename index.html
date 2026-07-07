@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>JSX → HTML Converter</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  textarea { font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; }
+</style>
+</head>
+<body class="bg-slate-50 min-h-screen">
+  <div class="max-w-4xl mx-auto px-6 py-12">
+    <div class="mb-8">
+      <h1 class="text-2xl font-bold text-slate-900">JSX → HTML Converter</h1>
+      <p class="text-slate-500 mt-1 text-sm">Paste or upload any Claude artifact (.jsx/.tsx). Imports are auto-resolved live from esm.sh, so any npm package works — not just a fixed list. Runs entirely in your browser.</p>
+    </div>
+
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-6">
+      <div class="flex items-center justify-between mb-3">
+        <label class="text-sm font-medium text-slate-700">1. Provide your JSX</label>
+        <label class="cursor-pointer text-sm text-blue-600 hover:text-blue-700 font-medium">
+          Upload file
+          <input type="file" id="fileInput" accept=".jsx,.tsx,.js,.ts" class="hidden" />
+        </label>
+      </div>
+      <textarea id="jsxInput" rows="16" class="w-full border border-slate-200 rounded-lg p-4 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Paste your JSX/TSX code here, or upload a file above..."></textarea>
+    </div>
+
+    <div class="flex items-center gap-3 mb-6">
+      <button id="convertBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-medium px-5 py-2.5 rounded-lg transition">
+        Convert to HTML
+      </button>
+      <button id="downloadBtn" disabled class="bg-slate-200 text-slate-400 font-medium px-5 py-2.5 rounded-lg transition cursor-not-allowed">
+        Download HTML
+      </button>
+      <span id="statusMsg" class="text-sm"></span>
+    </div>
+
+    <div id="detectedImports" class="hidden mb-6 text-sm text-slate-600 bg-slate-100 rounded-lg p-4"></div>
+
+    <div id="previewSection" class="hidden bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="bg-slate-900 text-slate-300 text-xs px-4 py-2 font-mono">Live preview</div>
+      <iframe id="previewFrame" class="w-full border-0" style="height: 500px;"></iframe>
+    </div>
+
+    <div class="mt-8 bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
+      <strong>How this works:</strong> every import in your file (e.g. <code>recharts</code>, <code>lucide-react</code>, <code>framer-motion</code>) is automatically mapped to <code>esm.sh</code>, which serves that package as a real browser module on demand — so this isn't limited to a fixed library list. React/ReactDOM are pinned to a single shared instance so hooks work correctly across libraries. Requires internet access when the output HTML is opened, since packages are fetched live rather than bundled offline.
+    </div>
+  </div>
+
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/javascript">
+let compiledCode = '';
+
+document.getElementById('fileInput').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (evt) => {
+    document.getElementById('jsxInput').value = evt.target.result;
+  };
+  reader.readAsText(file);
+});
+
+function extractBareImports(source) {
+  const specifiers = new Set();
+  const importRegex = /import\s+(?:[^'"]+from\s+)?["']([^"']+)["']/g;
+  let match;
+  while ((match = importRegex.exec(source)) !== null) {
+    const spec = match[1];
+    if (!spec.startsWith('.') && !spec.startsWith('/') && !spec.startsWith('http')) {
+      specifiers.add(spec);
+    }
+  }
+  return Array.from(specifiers);
+}
+
+function buildImportMap(specifiers) {
+  const map = {
+    "react": "https://esm.sh/react@18",
+    "react-dom": "https://esm.sh/react-dom@18",
+    "react-dom/client": "https://esm.sh/react-dom@18/client"
+  };
+  specifiers.forEach(spec => {
+    if (map[spec]) return;
+    map[spec] = `https://esm.sh/${spec}?external=react,react-dom`;
+  });
+  return map;
+}
+
+document.getElementById('convertBtn').addEventListener('click', () => {
+  const source = document.getElementById('jsxInput').value;
+  const statusMsg = document.getElementById('statusMsg');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const previewSection = document.getElementById('previewSection');
+  const detectedImports = document.getElementById('detectedImports');
+
+  if (!source.trim()) {
+    statusMsg.textContent = 'Paste or upload some JSX first.';
+    statusMsg.className = 'text-sm text-red-600';
+    return;
+  }
+
+  try {
+    const specifiers = extractBareImports(source);
+    const importMap = buildImportMap(specifiers);
+
+    let transformed = Babel.transform(source, {
+      presets: [["typescript", { isTSX: true, allExtensions: true }], "react"],
+      filename: 'artifact.tsx'
+    }).code;
+
+    // Convert default export into a named reference we can render
+    transformed = transformed.replace(/^export\s+default\s+/m, 'const __Artifact__ = ');
+    transformed = transformed.replace(/^export\s+/gm, '');
+
+    if (!/__Artifact__/.test(transformed)) {
+      transformed += '\nconst __Artifact__ = typeof App !== "undefined" ? App : null;';
+    }
+
+    const html = buildHtmlDocument(transformed, importMap);
+    compiledCode = html;
+
+    downloadBtn.disabled = false;
+    downloadBtn.className = 'bg-green-600 hover:bg-green-700 text-white font-medium px-5 py-2.5 rounded-lg transition cursor-pointer';
+    statusMsg.textContent = 'Converted successfully.';
+    statusMsg.className = 'text-sm text-green-600';
+
+    detectedImports.classList.remove('hidden');
+    detectedImports.innerHTML = '<strong>Detected packages:</strong> ' + (specifiers.length ? specifiers.join(', ') : 'none (plain React only)');
+
+    previewSection.classList.remove('hidden');
+    document.getElementById('previewFrame').srcdoc = html;
+  } catch (err) {
+    statusMsg.textContent = 'Error: ' + err.message;
+    statusMsg.className = 'text-sm text-red-600';
+    downloadBtn.disabled = true;
+    downloadBtn.className = 'bg-slate-200 text-slate-400 font-medium px-5 py-2.5 rounded-lg transition cursor-not-allowed';
+  }
+});
+
+document.getElementById('downloadBtn').addEventListener('click', () => {
+  if (!compiledCode) return;
+  const blob = new Blob([compiledCode], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'artifact-output.html';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+function buildHtmlDocument(transpiledSource, importMap) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Artifact</title>
+<script src="https://cdn.tailwindcss.com"><\/script>
+<script type="importmap">
+${JSON.stringify({ imports: importMap }, null, 2)}
+<\/script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+const { useState, useEffect, useRef, useMemo, useCallback, useReducer, useContext, createContext } = React;
+
+${transpiledSource}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+if (typeof __Artifact__ !== 'undefined' && __Artifact__) {
+  root.render(React.createElement(__Artifact__));
+} else {
+  document.getElementById('root').innerHTML = '<div style="padding:2rem;font-family:sans-serif;color:#b91c1c">No default export component found.</div>';
+}
+<\/script>
+</body>
+</html>`;
+}
+</script>
+</body>
+</html>
